@@ -1,0 +1,447 @@
+version: '3'
+
+services:
+
+  traefik:
+    hostname: traefik
+    container_name: traefik
+    image: traefik:latest
+    restart: always
+    domainname: ${DOMAINNAME}
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - ${CONTAINERPATH}/traefik:/etc/traefik
+      - ${CONTAINERPATH}/shared:/shared
+#      - ${CONTAINERPATH}/shared/log/traefik:/shared/log
+      - /var/log/traefik:/var/log
+    ports:
+      - "80:80"
+      - "443:443"
+ #     - "8080:8080"
+    networks:
+      - default
+      - traefik_proxy
+    environment:
+      - NAMECHEAP_API_USER=${NAMECHEAP_API_USER}
+      - NAMECHEAP_API_KEY=${NAMECHEAP_API_KEY}
+    command:
+      - "--web"
+      #new below
+      - "--loglevel=INFO"
+      - "--accesslog=true"
+      #new above
+      - "--accessLog.filePath=/var/log/access.log"
+#      - "--accessLog.filePath=/shared/log/access.log"
+      - "--accessLog.filters.statusCodes=400-499"
+    labels:
+      - "traefik.enable=true"
+      - "traefik.backend=traefik"
+      - "traefik.frontend.rule=Host:traefik.${DOMAINNAME}"
+      - "traefik.port=8080"
+      - "traefik.docker.network=traefik_proxy"
+      - "traefik.frontend.headers.SSLRedirect=true"
+      - "traefik.frontend.headers.STSSeconds=315360000"
+      - "traefik.frontend.headers.browserXSSFilter=true"
+      - "traefik.frontend.headers.contentTypeNosniff=true"
+      - "traefik.frontend.headers.forceSTSHeader=true"
+      - "traefik.frontend.headers.SSLHost=${DOMAINNAME}"
+      - "traefik.frontend.headers.STSIncludeSubdomains=true"
+      - "traefik.frontend.headers.STSPreload=true"
+      - "traefik.frontend.headers.frameDeny=true"
+      - "traefik.frontend.auth.basic.users=emus:$$apr1$$dLZc9qWP$$J1nuYXszSwD7WjWkhMNo./"
+
+
+
+  fail2ban:
+    container_name: fail2ban
+    image: crazymax/fail2ban:latest
+    #network_mode: "host"
+    networks:
+      - default
+      - traefik_proxy
+    cap_add:
+      - NET_ADMIN
+      - NET_RAW
+    volumes:
+    #  - ${CONTAINERPATH}/traefik/log:/var/log:ro
+    
+    #  - ${CONTAINERPATH}/shared/log:/var/log:ro
+      - ${CONTAINERPATH}/fail2ban/data:/data
+    environment:
+      - TZ=${TZ}
+
+
+  postgres:
+    container_name: Postgres
+    image: postgres
+    restart: always
+    ports:
+      - "5432:5432"
+    networks:
+      - default 
+    environment:
+      - TZ=${TZ}
+ #     - POSTGRES_DB=${POSTGRES_DB}
+      - POSTGRES_USER=${POSTGRES_USER}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+    volumes:
+      - ${CONTAINERPATH}/postgres/data:/var/lib/postgresql/data
+      - ${CONTAINERPATH}/shared:/shared
+
+
+
+  pgadmin4:
+    container_name: pgadmin4
+    image: dpage/pgadmin4
+    restart: always
+    ports:
+      - "5050:80"
+    networks:
+      - default
+    environment:
+      - PGADMIN_DEFAULT_EMAIL=${PGADMIN_DEFAULT_EMAIL}
+      - PGADMIN_DEFAULT_PASSWORD=${PGADMIN_DEFAULT_PASSWORD}
+      - PUID=${PUID}
+      - PGID=${PGID}
+      - TZ=${TZ}
+    volumes:
+      - ${CONTAINERPATH}/pgadmin4:/root/.pgadmin
+      - ${CONTAINERPATH}/pgadmin4:/var/lib/pgadmin
+
+
+  mqtt:
+    container_name: mqtt
+    image: eclipse-mosquitto:latest
+    restart: always
+    ports:
+      - "1883:1883"
+#      - "8883:8883"
+      - "9001:9001"
+    #depends_on:
+    #  - homeassistant
+    networks:
+      - default
+    environment:
+      - PUID=${PUID}
+      - PGID=${PGID}
+      - TZ=${TZ}
+    volumes:
+      - ${CONTAINERPATH}/mosquitto/data:/mosquitto/data
+      - ${CONTAINERPATH}/mosquitto/config/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
+      - ${CONTAINERPATH}/mosquitto/log:/mosquitto/log
+      - ${CONTAINERPATH}/shared:/shared
+
+  mqttbridge:
+    container_name: mqttbridge
+    image: stjohnjohnson/smartthings-mqtt-bridge
+    restart: always
+    volumes:
+      - ${CONTAINERPATH}/mqtt-bridge/config:/config
+    ports:
+      - "8080:8080"
+    depends_on:
+      - mqtt
+
+
+  nextcloud:
+    container_name: nextcloud
+    image: linuxserver/nextcloud:latest
+    restart: always
+    volumes:
+      - ${CONTAINERPATH}/nextcloud/config:/config
+      # path to where nextcloud will store internal config files
+      - ${CONTAINERPATH}/nextcloud/data:/data
+      - ${CONTAINERPATH}/shared:/shared
+    ports:
+      - "9443:443"
+    networks:
+      - default
+      - traefik_proxy
+    environment:
+      - PUID=${PUID}
+      - PGID=${PGID}
+      - POSTGRES_DB=${POSTGRES_DB}
+      - POSTGRES_USER=${POSTGRES_USER}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+      - POSTGRES_HOST=postgres
+#      - NEXTCLOUD_ADMIN_USER=admin
+#      - NEXTCLOUD_ADMIN_PASSWORD=admin
+    depends_on:
+      - postgres
+    labels:
+      - "traefik.enable=true"
+      - "traefik.backend=nextcloud"
+      - "traefik.frontend.rule=Host:nextcloud.${DOMAINNAME}"
+      - "traefik.port=443"
+      - "traefik.protocol=https"
+      - "traefik.docker.network=traefik_proxy"
+      - "traefik.frontend.headers.SSLRedirect=true"
+      - "traefik.frontend.headers.STSSeconds=315360000"
+      - "traefik.frontend.headers.browserXSSFilter=true"
+      - "traefik.frontend.headers.contentTypeNosniff=true"
+      - "traefik.frontend.headers.forceSTSHeader=true"
+      - "traefik.frontend.headers.SSLHost=${DOMAINNAME}"
+      - "traefik.frontend.headers.STSIncludeSubdomains=true"
+      - "traefik.frontend.headers.STSPreload=true"
+      - "traefik.frontend.headers.frameDeny=true"
+      - com.centurylinklabs.watchtower.enable="false"
+
+
+
+  watchtower:
+    container_name: watchtower
+    hostname: watchtower
+    restart: always
+    image: v2tec/watchtower
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    command: --schedule "0 0 4 * * *" --cleanup
+
+
+
+  influxdb:
+    container_name: influxdb
+    image: influxdb
+    restart: always
+    ports:
+      - "8086:8086"
+    networks:
+      - default
+    volumes:
+      # files cannot be created by docker-compose, it'll make it as a directory instead. Make sure to touch this file first.
+      - ${CONTAINERPATH}/influxdb/influxdb.generated.conf:/etc/influxdb/influxdb.generated.conf
+      - ${CONTAINERPATH}/influxdb/db:/var/lib/influxdb
+      - ${CONTAINERPATH}/influxdb:/var/lib/influxdb
+      - ${CONTAINERPATH}/shared:/shared
+    environment:
+      #- INFLUX_GRAPHITE_ENABLED ='true'
+      #- INFLUXDB_ADMIN_USER=${INFLUXDB_ADMIN_USER}
+      #- INFLUXDB_ADMIN_PASSWORD=${INFLUXDB_ADMIN_PASSWORD}
+      - INFLUXDB_DB=${INFLUXDB_DB}
+      - INFLUXDB_USER=${INFLUXDB_USER}
+      - INFLUXDB_USER_PASSWORD=${INFLUXDB_USER_PASSWORD}
+      - TZ=${TZ}
+    #labels:
+    #  - "traefik.enable=false"
+
+
+  grafana:
+    container_name: grafana
+    image: grafana/grafana:latest
+    restart: always
+    depends_on:
+      - influxdb
+    #Grafana uses User ID 472
+    #user: "472"
+    user: ${PUID}
+    ports:
+      - "3000:3000"
+    networks:
+      - default 
+    # to enable persistent storage, you might need to modify user permissions by creating this container in
+    # interactive mode and adjusting the permissions from a shell first
+    volumes:
+      - ${CONTAINERPATH}/grafana:/var/lib/grafana
+    #  - grafana-storage:/var/lib/grafana
+      - ${CONTAINERPATH}/grafana/grafana.ini:/etc/grafana/grafana.ini:ro
+    #  - ${CONTAINERPATH}/shared:/shared
+    environment:
+    #  - PUID=${PUID}
+    #  - PGID=${PGID}
+      - TZ=${TZ}
+    #labels:
+    #  - "traefik.enable=false"
+
+ 
+  homeassistant:
+    container_name: home-assistant
+    image: homeassistant/home-assistant:0.95.4
+    #image: homeassistant/home-assistant:0.95.0
+    restart: always
+    depends_on:
+      - postgres
+      - influxdb
+      - mqtt
+    #  - nodered1 - automations don't seen to execute if NR is brought up first
+    ports:
+      - "8123:8123"
+    networks:
+    #  - traefik_proxy
+      - default
+    environment:
+      - TZ=${TZ}
+    volumes:
+      - ${CONTAINERPATH}/homeassistant:/config
+      - /etc/localtime:/etc/localtime:ro
+      - ${CONTAINERPATH}/shared:/shared 
+   # labels:
+   #   - "traefik.enable=true"
+   #   - "traefik.backend=home"
+   #   - "traefik.frontend.rule=Host:home.${DOMAINNAME}"
+   #   - "traefik.port=443"
+   #   - "traefik.protocol=https"
+   #   - "traefik.docker.network=traefik_proxy"
+   #   - "traefik.frontend.headers.SSLRedirect=true"
+   #   - "traefik.frontend.headers.STSSeconds=315360000"
+   #   - "traefik.frontend.headers.browserXSSFilter=true"
+   #   - "traefik.frontend.headers.contentTypeNosniff=true"
+   #   - "traefik.frontend.headers.forceSTSHeader=true"
+   #   - "traefik.frontend.headers.SSLHost=${DOMAINNAME}"
+   #   - "traefik.frontend.headers.STSIncludeSubdomains=true"
+   #   - "traefik.frontend.headers.STSPreload=true"
+   #   - "traefik.frontend.headers.frameDeny=true"
+   #   - com.centurylinklabs.watchtower.enable="false"
+
+
+  nodered1:
+    container_name: node-red-1
+    image: nodered/node-red-docker:v8
+    restart: always
+    ports:
+      - "1880:1880"
+    environment:
+        TZ: ${TZ}
+    depends_on:
+      - homeassistant
+    user: root
+    volumes:
+      - ${CONTAINERPATH}/node-red-1/user:/data
+      - /etc/localtime:/etc/localtime:ro
+      - /root/.ssh:/root/.ssh:ro
+
+  #jupyter:
+  #  container_name: jupyter
+  #  image: jupyter/datascience-notebook
+  #  ports:
+  #    - 8888:8888
+  #  volumes:
+  #      - ${CONTAINERPATH}/jupyter:/homes/emus/jupyter
+      
+
+#  calibre-web:
+#    container_name: calibre-web
+#    image: technosoft2000/calibre-web
+#    restart: always
+#    volumes:
+#      - ${CONTAINERPATH}/calibre-web/books:/books'
+#      - '/etc/localtime:/etc/localtime:ro'
+#    environment:
+#      - PUID=${PUID}
+#      - PGID=${PGID}
+#      - TZ=${TZ}
+#    ports:
+#      - "8083:8083"
+#    networks:
+#      - traefik_proxy
+#      - default
+#    labels:
+#      - "traefik.enable=true"
+#      - "traefik.backend=books"
+#      - "traefik.frontend.rule=Host:books.${DOMAINNAME}"
+#      - "traefik.port=443"
+#      - "traefik.protocol=https"
+#      - "traefik.docker.network=traefik_proxy"
+#      - "traefik.frontend.headers.SSLRedirect=true"
+#      - "traefik.frontend.headers.STSSeconds=315360000"
+#      - "traefik.frontend.headers.browserXSSFilter=true"
+#      - "traefik.frontend.headers.contentTypeNosniff=true"
+#      - "traefik.frontend.headers.forceSTSHeader=true"
+#      - "traefik.frontend.headers.SSLHost=${DOMAINNAME}"
+#      - "traefik.frontend.headers.STSIncludeSubdomains=true"
+#      - "traefik.frontend.headers.STSPreload=true"
+#      - "traefik.frontend.headers.frameDeny=true"
+
+
+  kanboard:
+    image: kanboard/kanboard:v1.2.9
+    container_name: kanboard
+    restart: always
+    ports:
+      - "2001:443"
+    networks:
+     - traefik_proxy
+     - default
+    volumes:
+     - ${CONTAINERPATH}/kanboard/data:/var/www/app/data
+     - ${CONTAINERPATH}/kanboard/plugins:/var/www/app/plugins
+     - ${CONTAINERPATH}/kanboard/kanboard_ssl:/etc/nginx/ssl
+    environment:
+      DATABASE_URL: ${DATABASE_URL}
+    #  DEBUG: "true"
+    labels:
+      - "traefik.enable=true"
+      - "traefik.backend=kanboard"
+      - "traefik.frontend.rule=Host:kanboard.${DOMAINNAME}"
+      - "traefik.port=443"
+      - "traefik.protocol=https"
+      - "traefik.docker.network=traefik_proxy"
+      - "traefik.frontend.headers.SSLRedirect=true"
+      - "traefik.frontend.headers.STSSeconds=315360000"
+      - "traefik.frontend.headers.browserXSSFilter=true"
+      - "traefik.frontend.headers.contentTypeNosniff=true"
+      - "traefik.frontend.headers.forceSTSHeader=true"
+      - "traefik.frontend.headers.SSLHost=${DOMAINNAME}"
+      - "traefik.frontend.headers.STSIncludeSubdomains=true"
+      - "traefik.frontend.headers.STSPreload=true"
+      - "traefik.frontend.headers.frameDeny=true"
+
+
+  heimdall:
+    image: linuxserver/heimdall:latest
+    container_name: heimdall
+    restart: always
+    environment:
+      - PGID=${PGID}
+      - PUID=${PUID}
+      - TZ=${TZ}
+    ports:
+    # - "9006:9006"
+    - "9006:80"
+    #- "9006:443"
+    networks:
+      - traefik_proxy
+      - default
+    volumes:
+      - ${CONTAINERPATH}/heimdall:/config
+
+    labels:
+      - "traefik.enable=true"
+      - "traefik.backend=heimdall"
+#      - "traefik.frontend.rule=Host:kanboard.${DOMAINNAME}"
+      - "traefik.port=443"
+      - "traefik.protocol=https"
+      - "traefik.docker.network=traefik_proxy"
+      - com.centurylinklabs.watchtower.enable="true"
+
+
+#  ttrss:
+#    container_name: ttrss
+#    #image: linuxserver/tt-rss
+#    image: tschwery/ttrss
+#    restart: on-failure
+#    depends_on:
+#      - postgres
+#    ports:
+#      - "30080:80"
+#    environment:
+#      - PGID=${PGID}
+#      - PUID=${PUID}
+#      - TZ=${TZ}
+#      # Use this line only if using a non-std DB port
+#      - DB_TYPE=pgsql
+#      - DB_HOST=postgres
+#      - DB_PORT=5432
+#      - DB_NAME=ttrss
+#      - DB_USER=${DB_USER}
+#      - DB_PASS=${DB_PORT}
+#      - SELF_URL_PATH=http://192.168.2.112:30080/
+#    volumes:
+#      - ${CONTAINERPATH}/ttrss/data:/config
+
+
+networks:
+  traefik_proxy:
+    external:
+      name: traefik_proxy
+  default:
+    driver: bridge
