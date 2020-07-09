@@ -4,9 +4,7 @@ Active Containers:
 - traefik
 - fail2ban
 - postgres
-- pgadmin4
 - mqtt
-- mqttbridge
 - nextcloud
 - watchtower
 - influxdb
@@ -14,5 +12,4 @@ Active Containers:
 - home assistant
 - node red
 - kanboard
-- heimdall
 
