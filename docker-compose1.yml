@@ -1,79 +1,133 @@
 version: '3'
 
-services:
 
+networks:
   traefik:
-    hostname: traefik
-    container_name: traefik
-    image: traefik:latest
+    internal: true
+  default:
+    driver: bridge
+
+
+
+services:
+  
+  watchtower:
+    container_name: watchtower
+    image: containrrr/watchtower
     restart: always
-    domainname: ${DOMAINNAME}
+    command: --label-enable --cleanup --interval 86400 #checks every 24hrs
+    #network_mode: none
     volumes:
-      - /var/run/docker.sock:/var/run/docker.sock:ro
-      - ${CONTAINERPATH}/traefik:/etc/traefik
-      - ${CONTAINERPATH}/shared:/shared
-#      - ${CONTAINERPATH}/shared/log/traefik:/shared/log
-      - /var/log/traefik:/var/log
-    ports:
-      - "80:80"
-      - "443:443"
- #     - "8080:8080"
-    networks:
-      - default
-      - traefik_proxy
-    environment:
-      - NAMECHEAP_API_USER=${NAMECHEAP_API_USER}
-      - NAMECHEAP_API_KEY=${NAMECHEAP_API_KEY}
-    command:
-      - "--web"
-      #new below
-      - "--loglevel=INFO"
-      - "--accesslog=true"
-      #new above
-      - "--accessLog.filePath=/var/log/access.log"
-#      - "--accessLog.filePath=/shared/log/access.log"
-      - "--accessLog.filters.statusCodes=400-499"
+      - /var/run/docker.sock:/var/run/docker.sock
     labels:
-      - "traefik.enable=true"
-      - "traefik.backend=traefik"
-      - "traefik.frontend.rule=Host:traefik.${DOMAINNAME}"
-      - "traefik.port=8080"
-      - "traefik.docker.network=traefik_proxy"
-      - "traefik.frontend.headers.SSLRedirect=true"
-      - "traefik.frontend.headers.STSSeconds=315360000"
-      - "traefik.frontend.headers.browserXSSFilter=true"
-      - "traefik.frontend.headers.contentTypeNosniff=true"
-      - "traefik.frontend.headers.forceSTSHeader=true"
-      - "traefik.frontend.headers.SSLHost=${DOMAINNAME}"
-      - "traefik.frontend.headers.STSIncludeSubdomains=true"
-      - "traefik.frontend.headers.STSPreload=true"
-      - "traefik.frontend.headers.frameDeny=true"
-      - "traefik.frontend.auth.basic.users=emus:$$apr1$$dLZc9qWP$$J1nuYXszSwD7WjWkhMNo./"
+      - "com.centurylinklabs.watchtower.enable=true"
 
 
+  dockerproxy:
+    container_name: dockerproxy
+    image: tecnativa/docker-socket-proxy
+    restart: always    
+    ports:
+      - 2375
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    environment:
+      CONTAINERS: 1
+    networks:
+      - traefik
+    depends_on:
+      - watchtower
+    labels:
+      - "com.centurylinklabs.watchtower.enable=true"
 
+
+  portainer:
+    container_name: portainer
+    image: portainer/portainer:1.24.0
+    restart: always
+    ports:
+      - "9000:9000"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - /share/Docker/portainer:/data
+
+  
   fail2ban:
     container_name: fail2ban
     image: crazymax/fail2ban:latest
-    #network_mode: "host"
-    networks:
-      - default
-      - traefik_proxy
-    cap_add:
-      - NET_ADMIN
-      - NET_RAW
-    volumes:
-    #  - ${CONTAINERPATH}/traefik/log:/var/log:ro
-    
-    #  - ${CONTAINERPATH}/shared/log:/var/log:ro
-      - ${CONTAINERPATH}/fail2ban/data:/data
+    restart: always
     environment:
       - TZ=${TZ}
+      - F2B_DB_PURGE_AGE=30d
+      - F2B_LOG_TARGET=/data/fail2ban.log
+      - F2B_LOG_LEVEL=INFO
+    #  - F2B_IPTABLES_CHAIN=INPUT
+      - F2B_IPTABLES_CHAIN=DOCKER-USER
+    network_mode: "host"
+    #networks:
+    #  - default
+    #  - traefik
+    volumes:
+      - ${CONTAINERPATH}/traefik/log:/var/log:ro
+    #  - ${CONTAINERPATH}/shared/log:/var/log:ro
+      - ${CONTAINERPATH}/fail2ban/data:/data
+      - ${CONTAINERPATH}/bitwardenrs:/data:ro
+    privileged: true
+    cap_add:
+      - NET_ADMIN
+      - NET_RAW  
+
+
+  traefik:
+    container_name: traefik
+    image: traefik:2.2
+    restart: always
+    security_opt:
+      - no-new-privileges:true
+    domainname: ${DOMAINNAME}
+    depends_on:
+     - watchtower
+     - dockerproxy
+    ports:
+      - 80:80
+      - 443:443
+    networks:
+      - default
+      - traefik
+    volumes:
+  #    - /var/run/docker.sock:/var/run/docker.sock:ro <--this is not used per use of dockerproxy above
+      - ${CONTAINERPATH}/traefik:/etc/traefik
+      - ${CONTAINERPATH}/traefik/log:/var/log
+      - ${CONTAINERPATH}/traefik/acme/acme.json:/acme.json
+      - ${CONTAINERPATH}/traefik/traefik.yml:/traefik.yml
+      - ${CONTAINERPATH}/traefik/dynamic_config.yml:/config.yml:ro
+      - ${CONTAINERPATH}/traefik/tmp:/tmp
+    environment:
+      - NAMECHEAP_API_USER=${NAMECHEAP_API_USER}
+      - NAMECHEAP_API_KEY=${NAMECHEAP_API_KEY}
+      - TZ=${TZ}
+    labels:
+      - traefik.enable=true
+      - traefik.http.routers.traefik.entrypoints=web
+      - traefik.http.routers.traefik.rule=Host(`traefik.${DOMAINNAME}`)
+      - traefik.http.routers.traefik.entrypoints=websecure
+      - traefik.http.middlewares.traefik-auth.basicauth.users=${HTTP_USERNAME}:${HTTP_PASSWORD}
+      - traefik.http.middlewares.traefik-https-redirect.redirectscheme.scheme=websecure
+      - traefik.http.routers.traefik.middlewares=traefik-https-redirect
+      - traefik.http.routers.traefik-secure.entrypoints=websecure
+      - traefik.http.routers.traefik-secure.rule=Host(`traefik.${DOMAINNAME}`)      
+      - traefik.http.routers.traefik-secure.middlewares=traefik-auth
+      - traefik.http.routers.traefik-secure.tls=true
+      - traefik.http.routers.traefik-secure.tls.certresolver=namecheap
+      - traefik.http.routers.traefik-secure.tls.domains[0].main=${DOMAINNAME}
+      - traefik.http.routers.traefik-secure.tls.domains[0].sans=*.${DOMAINNAME}
+      - traefik.http.routers.traefik-secure.tls.domains[0].main=${DOMAINNAME2}
+      - traefik.http.routers.traefik-secure.service=api@internal
 
 
   postgres:
-    container_name: Postgres
-    image: postgres
+    container_name: postgres
+    image: postgres:11
     restart: always
     ports:
       - "5432:5432"
@@ -89,36 +143,14 @@ services:
       - ${CONTAINERPATH}/shared:/shared
 
 
-
-  pgadmin4:
-    container_name: pgadmin4
-    image: dpage/pgadmin4
-    restart: always
-    ports:
-      - "5050:80"
-    networks:
-      - default
-    environment:
-      - PGADMIN_DEFAULT_EMAIL=${PGADMIN_DEFAULT_EMAIL}
-      - PGADMIN_DEFAULT_PASSWORD=${PGADMIN_DEFAULT_PASSWORD}
-      - PUID=${PUID}
-      - PGID=${PGID}
-      - TZ=${TZ}
-    volumes:
-      - ${CONTAINERPATH}/pgadmin4:/root/.pgadmin
-      - ${CONTAINERPATH}/pgadmin4:/var/lib/pgadmin
-
-
   mqtt:
     container_name: mqtt
     image: eclipse-mosquitto:latest
     restart: always
     ports:
       - "1883:1883"
-#      - "8883:8883"
+   #   - "8883:8883"
       - "9001:9001"
-    #depends_on:
-    #  - homeassistant
     networks:
       - default
     environment:
@@ -131,77 +163,53 @@ services:
       - ${CONTAINERPATH}/mosquitto/log:/mosquitto/log
       - ${CONTAINERPATH}/shared:/shared
 
-  mqttbridge:
-    container_name: mqttbridge
-    image: stjohnjohnson/smartthings-mqtt-bridge
-    restart: always
-    volumes:
-      - ${CONTAINERPATH}/mqtt-bridge/config:/config
-    ports:
-      - "8080:8080"
-    depends_on:
-      - mqtt
-
 
   nextcloud:
     container_name: nextcloud
-    image: linuxserver/nextcloud:latest
+    image: nextcloud
     restart: always
     volumes:
-      - ${CONTAINERPATH}/nextcloud/config:/config
-      # path to where nextcloud will store internal config files
-      - ${CONTAINERPATH}/nextcloud/data:/data
-      - ${CONTAINERPATH}/shared:/shared
+      - ${CONTAINERPATH}/nextcloud/www:/var/www/html
     ports:
       - "9443:443"
     networks:
       - default
-      - traefik_proxy
+      - traefik
     environment:
-      - PUID=${PUID}
-      - PGID=${PGID}
+      - TZ=${TZ}
       - POSTGRES_DB=${POSTGRES_DB}
       - POSTGRES_USER=${POSTGRES_USER}
       - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
       - POSTGRES_HOST=postgres
-#      - NEXTCLOUD_ADMIN_USER=admin
-#      - NEXTCLOUD_ADMIN_PASSWORD=admin
+    #  - NEXTCLOUD_ADMIN_USER=${NEXTCLOUD_ADMIN_USER}
+    #  - NEXTCLOUD_ADMIN_PASSWORD=${NEXTCLOUD_ADMIN_PASSWORD}
+    #  - NEXTCLOUD_TRUSTED_DOMAINS=${NEXTCLOUD_TRUSTED_DOMAINS}
+      - TRUSTED_PROXIES=172.29.4.0/22, 172.29.0.0/22
+      - NEXTCLOUD_UPDATE
     depends_on:
       - postgres
+      - traefik
     labels:
-      - "traefik.enable=true"
-      - "traefik.backend=nextcloud"
-      - "traefik.frontend.rule=Host:nextcloud.${DOMAINNAME}"
-      - "traefik.port=443"
-      - "traefik.protocol=https"
-      - "traefik.docker.network=traefik_proxy"
-      - "traefik.frontend.headers.SSLRedirect=true"
-      - "traefik.frontend.headers.STSSeconds=315360000"
-      - "traefik.frontend.headers.browserXSSFilter=true"
-      - "traefik.frontend.headers.contentTypeNosniff=true"
-      - "traefik.frontend.headers.forceSTSHeader=true"
-      - "traefik.frontend.headers.SSLHost=${DOMAINNAME}"
-      - "traefik.frontend.headers.STSIncludeSubdomains=true"
-      - "traefik.frontend.headers.STSPreload=true"
-      - "traefik.frontend.headers.frameDeny=true"
-      - com.centurylinklabs.watchtower.enable="false"
-
-
-
-  watchtower:
-    container_name: watchtower
-    hostname: watchtower
-    restart: always
-    image: v2tec/watchtower
-    volumes:
-      - /var/run/docker.sock:/var/run/docker.sock
-    command: --schedule "0 0 4 * * *" --cleanup
-
+      - traefik.enable=true
+      - traefik.http.routers.nextcloud-http.entrypoints=web
+      - traefik.http.routers.nextcloud-http.rule=Host(`nextcloud.${DOMAINNAME}`)
+      - traefik.http.routers.nextcloud-https.entrypoints=websecure
+      - traefik.http.routers.nextcloud-https.rule=Host(`nextcloud.${DOMAINNAME}`)
+      - traefik.http.routers.nextcloud-https.tls=true
+      - traefik.http.routers.nextcloud-https.tls.certresolver=default
+      - traefik.http.routers.nextcloud-http.middlewares=nextcloud-https@docker
+      - traefik.http.middlewares.nextcloud-https.redirectscheme.scheme=https
+      - traefik.http.middlewares.nextcloud-https.redirectScheme.permanent=true
+      - traefik.http.routers.nextcloud-https.middlewares=nextcloud-caldav@docker
+      - traefik.http.middlewares.nextcloud-caldav.redirectregex.permanent=true
+      - traefik.http.middlewares.nextcloud-caldav.redirectregex.regex=^https://(.*)/.well-known/(card|cal)dav
+      - traefik.http.middlewares.nextcloud-caldav.redirectregex.replacement=https://$${1}/remote.php/dav/
 
 
   influxdb:
     container_name: influxdb
-    image: influxdb
+    image: influxdb:latest
+    #image: influxdb:1.7.4
     restart: always
     ports:
       - "8086:8086"
@@ -221,13 +229,12 @@ services:
       - INFLUXDB_USER=${INFLUXDB_USER}
       - INFLUXDB_USER_PASSWORD=${INFLUXDB_USER_PASSWORD}
       - TZ=${TZ}
-    #labels:
-    #  - "traefik.enable=false"
 
 
   grafana:
     container_name: grafana
     image: grafana/grafana:latest
+#    image: grafana/grafana:6.7.2
     restart: always
     depends_on:
       - influxdb
@@ -237,65 +244,41 @@ services:
     ports:
       - "3000:3000"
     networks:
-      - default 
+      - default
     # to enable persistent storage, you might need to modify user permissions by creating this container in
     # interactive mode and adjusting the permissions from a shell first
     volumes:
       - ${CONTAINERPATH}/grafana:/var/lib/grafana
-    #  - grafana-storage:/var/lib/grafana
       - ${CONTAINERPATH}/grafana/grafana.ini:/etc/grafana/grafana.ini:ro
-    #  - ${CONTAINERPATH}/shared:/shared
     environment:
-    #  - PUID=${PUID}
-    #  - PGID=${PGID}
       - TZ=${TZ}
-    #labels:
-    #  - "traefik.enable=false"
+      - "GF_INSTALL_PLUGINS=grafana-clock-panel,grafana-simple-json-datasource,grafana-worldmap-panel,grafana-piechart-panel"
+      - allow_embedding=true
 
  
   homeassistant:
     container_name: home-assistant
-    image: homeassistant/home-assistant:0.95.4
-    #image: homeassistant/home-assistant:0.95.0
+    image: homeassistant/home-assistant:0.112.2
+    #image: homeassistant/home-assistant:0.111.4
     restart: always
     depends_on:
       - postgres
       - influxdb
       - mqtt
-    #  - nodered1 - automations don't seen to execute if NR is brought up first
     ports:
       - "8123:8123"
     networks:
-    #  - traefik_proxy
       - default
     environment:
       - TZ=${TZ}
     volumes:
       - ${CONTAINERPATH}/homeassistant:/config
-      - /etc/localtime:/etc/localtime:ro
-      - ${CONTAINERPATH}/shared:/shared 
-   # labels:
-   #   - "traefik.enable=true"
-   #   - "traefik.backend=home"
-   #   - "traefik.frontend.rule=Host:home.${DOMAINNAME}"
-   #   - "traefik.port=443"
-   #   - "traefik.protocol=https"
-   #   - "traefik.docker.network=traefik_proxy"
-   #   - "traefik.frontend.headers.SSLRedirect=true"
-   #   - "traefik.frontend.headers.STSSeconds=315360000"
-   #   - "traefik.frontend.headers.browserXSSFilter=true"
-   #   - "traefik.frontend.headers.contentTypeNosniff=true"
-   #   - "traefik.frontend.headers.forceSTSHeader=true"
-   #   - "traefik.frontend.headers.SSLHost=${DOMAINNAME}"
-   #   - "traefik.frontend.headers.STSIncludeSubdomains=true"
-   #   - "traefik.frontend.headers.STSPreload=true"
-   #   - "traefik.frontend.headers.frameDeny=true"
-   #   - com.centurylinklabs.watchtower.enable="false"
+      - /var/run/docker.sock:/var/run/docker.sock #used for the docker monitor integration
 
 
   nodered1:
-    container_name: node-red-1
-    image: nodered/node-red-docker:v8
+    container_name: node-red
+    image: nodered/node-red:1.0.6
     restart: always
     ports:
       - "1880:1880"
@@ -309,57 +292,48 @@ services:
       - /etc/localtime:/etc/localtime:ro
       - /root/.ssh:/root/.ssh:ro
 
-  #jupyter:
-  #  container_name: jupyter
-  #  image: jupyter/datascience-notebook
-  #  ports:
-  #    - 8888:8888
-  #  volumes:
-  #      - ${CONTAINERPATH}/jupyter:/homes/emus/jupyter
-      
 
-#  calibre-web:
-#    container_name: calibre-web
-#    image: technosoft2000/calibre-web
-#    restart: always
-#    volumes:
-#      - ${CONTAINERPATH}/calibre-web/books:/books'
-#      - '/etc/localtime:/etc/localtime:ro'
-#    environment:
-#      - PUID=${PUID}
-#      - PGID=${PGID}
-#      - TZ=${TZ}
-#    ports:
-#      - "8083:8083"
-#    networks:
-#      - traefik_proxy
-#      - default
-#    labels:
-#      - "traefik.enable=true"
-#      - "traefik.backend=books"
-#      - "traefik.frontend.rule=Host:books.${DOMAINNAME}"
-#      - "traefik.port=443"
-#      - "traefik.protocol=https"
-#      - "traefik.docker.network=traefik_proxy"
-#      - "traefik.frontend.headers.SSLRedirect=true"
-#      - "traefik.frontend.headers.STSSeconds=315360000"
-#      - "traefik.frontend.headers.browserXSSFilter=true"
-#      - "traefik.frontend.headers.contentTypeNosniff=true"
-#      - "traefik.frontend.headers.forceSTSHeader=true"
-#      - "traefik.frontend.headers.SSLHost=${DOMAINNAME}"
-#      - "traefik.frontend.headers.STSIncludeSubdomains=true"
-#      - "traefik.frontend.headers.STSPreload=true"
-#      - "traefik.frontend.headers.frameDeny=true"
+  calibre-web:
+    container_name: calibre-web
+    image: technosoft2000/calibre-web
+    restart: always
+    volumes:
+      - ${CONTAINERPATH}/calibre-web/config:/config
+      - ${CONTAINERPATH}/calibre-web/app:/app
+      - ${CONTAINERPATH}/calibre-web/kindlegen:/kindlegen
+      - /share/CACHEDEV1_DATA/Recovery/Syncs/Ares-II/MediaContent/PrintLibrary/CalibreLibrary:/books
+    environment:
+      - PUID=${PUID}
+      - PGID=${PGID}
+      - TZ=${TZ}
+      - USE_CONFIG_DIR=true
+    ports:
+      - "8083:8083"
+    networks:
+      - traefik
+      - default
+    labels:
+      - traefik.enable=true
+      - traefik.http.routers.books-http.entrypoints=web
+      - traefik.http.routers.books-http.rule=Host(`books.${DOMAINNAME}`)
+      - traefik.http.routers.books-https.entrypoints=websecure
+      - traefik.http.routers.books-https.rule=Host(`books.${DOMAINNAME}`)
+      - traefik.http.routers.books-https.tls=true
+      - traefik.http.routers.books-https.tls.certresolver=default
+      - traefik.http.routers.books-http.middlewares=books-https@docker
+      - traefik.http.middlewares.books-https.redirectscheme.scheme=https
+      - traefik.http.middlewares.books-https.redirectScheme.permanent=true
 
 
   kanboard:
-    image: kanboard/kanboard:v1.2.9
+    image: kanboard/kanboard:latest
     container_name: kanboard
     restart: always
     ports:
-      - "2001:443"
+     - "2001:443"
+    # - "2001:80" #disable this when traefik is fixed
     networks:
-     - traefik_proxy
+     - traefik
      - default
     volumes:
      - ${CONTAINERPATH}/kanboard/data:/var/www/app/data
@@ -367,81 +341,62 @@ services:
      - ${CONTAINERPATH}/kanboard/kanboard_ssl:/etc/nginx/ssl
     environment:
       DATABASE_URL: ${DATABASE_URL}
-    #  DEBUG: "true"
+      DEBUG: "true"
     labels:
-      - "traefik.enable=true"
-      - "traefik.backend=kanboard"
-      - "traefik.frontend.rule=Host:kanboard.${DOMAINNAME}"
-      - "traefik.port=443"
-      - "traefik.protocol=https"
-      - "traefik.docker.network=traefik_proxy"
-      - "traefik.frontend.headers.SSLRedirect=true"
-      - "traefik.frontend.headers.STSSeconds=315360000"
-      - "traefik.frontend.headers.browserXSSFilter=true"
-      - "traefik.frontend.headers.contentTypeNosniff=true"
-      - "traefik.frontend.headers.forceSTSHeader=true"
-      - "traefik.frontend.headers.SSLHost=${DOMAINNAME}"
-      - "traefik.frontend.headers.STSIncludeSubdomains=true"
-      - "traefik.frontend.headers.STSPreload=true"
-      - "traefik.frontend.headers.frameDeny=true"
+      - traefik.enable=true
+      - traefik.http.routers.kanboard-http.entrypoints=web
+      - traefik.http.routers.kanboard-http.rule=Host(`kanboard.${DOMAINNAME}`)
+      - traefik.http.routers.kanboard-https.entrypoints=websecure
+      - traefik.http.routers.kanboard-https.rule=Host(`kanboard.${DOMAINNAME}`)
+      - traefik.http.routers.kanboard-https.tls=true
+      - traefik.http.routers.kanboard-https.tls.certresolver=default
+      - traefik.http.routers.kanboard-http.middlewares=kanboard-https@docker
+      - traefik.http.middlewares.kanboard-https.redirectscheme.scheme=https
+      - traefik.http.middlewares.kanboard-https.redirectScheme.permanent=true
+      - com.centurylinklabs.watchtower.enable=true
 
 
-  heimdall:
-    image: linuxserver/heimdall:latest
-    container_name: heimdall
+  bitwarden:
+    image: bitwardenrs/server
+    container_name: bitwarden
     restart: always
-    environment:
-      - PGID=${PGID}
-      - PUID=${PUID}
-      - TZ=${TZ}
-    ports:
-    # - "9006:9006"
-    - "9006:80"
-    #- "9006:443"
+    #ports:
+    #  - "2004:80"
     networks:
-      - traefik_proxy
-      - default
+      - traefik
+    #  - default
     volumes:
-      - ${CONTAINERPATH}/heimdall:/config
-
+       - ${CONTAINERPATH}/bitwardenrs:/data
+    environment:
+      WEBSOCKET_ENABLED: 'true' # Required to use websockets
+      SIGNUPS_ALLOWED: 'false'   # set to false to disable signups
+      LOG_FILE: '/data/bitwarden.log'
     labels:
-      - "traefik.enable=true"
-      - "traefik.backend=heimdall"
-#      - "traefik.frontend.rule=Host:kanboard.${DOMAINNAME}"
-      - "traefik.port=443"
-      - "traefik.protocol=https"
-      - "traefik.docker.network=traefik_proxy"
-      - com.centurylinklabs.watchtower.enable="true"
+      - traefik.enable=true
+      - traefik.docker.network=traefik
+      - traefik.http.routers.bitwarden-ui-http.entrypoints=web
+      - traefik.http.routers.bitwarden-ui-http.rule=Host(`bitwarden.${DOMAINNAME}`)
+      - traefik.http.routers.bitwarden-ui-http.middlewares=redirect-https
+      - traefik.http.routers.bitwarden-ui-http.service=bitwarden-ui
 
+      - traefik.http.routers.bitwarden-ui-https.entrypoints=websecure
+      - traefik.http.routers.bitwarden-ui-https.rule=Host(`bitwarden.${DOMAINNAME}`)
+      - traefik.http.routers.bitwarden-ui-https.tls=true
+      - traefik.http.routers.bitwarden-ui-https.service=bitwarden-ui
+      - traefik.http.routers.bitwarden-websocket-http.entrypoints=web
+      - traefik.http.routers.bitwarden-websocket-http.rule=Host(`bitwarden.${DOMAINNAME}`) && Path(`/notifications/hub`)
 
-#  ttrss:
-#    container_name: ttrss
-#    #image: linuxserver/tt-rss
-#    image: tschwery/ttrss
-#    restart: on-failure
-#    depends_on:
-#      - postgres
-#    ports:
-#      - "30080:80"
-#    environment:
-#      - PGID=${PGID}
-#      - PUID=${PUID}
-#      - TZ=${TZ}
-#      # Use this line only if using a non-std DB port
-#      - DB_TYPE=pgsql
-#      - DB_HOST=postgres
-#      - DB_PORT=5432
-#      - DB_NAME=ttrss
-#      - DB_USER=${DB_USER}
-#      - DB_PASS=${DB_PORT}
-#      - SELF_URL_PATH=http://192.168.2.112:30080/
-#    volumes:
-#      - ${CONTAINERPATH}/ttrss/data:/config
+      - traefik.http.routers.bitwarden-websocket-http.middlewares=redirect-https
+      - traefik.http.routers.bitwarden-websocket-http.service=bitwarden-websocket
 
+      - traefik.http.routers.bitwarden-websocket-https.entrypoints=websecure
+      - traefik.http.routers.bitwarden-websocket-https.rule=Host(`bitwarden.${DOMAINNAME}`) && Path(`/notifications/hub`)
+      - traefik.http.routers.bitwarden-websocket-https.tls=true
+      - traefik.http.routers.bitwarden-websocket-https.service=bitwarden-websocket
 
-networks:
-  traefik_proxy:
-    external:
-      name: traefik_proxy
-  default:
-    driver: bridge
+      - traefik.http.middlewares.redirect-https.redirectScheme.scheme=https
+      - traefik.http.middlewares.redirect-https.redirectScheme.permanent=true
+      - traefik.http.services.bitwarden-ui.loadbalancer.server.port=80
+      - traefik.http.services.bitwarden-websocket.loadbalancer.server.port=3012
+
+  
