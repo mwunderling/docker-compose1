@@ -213,14 +213,15 @@ services:
     restart: always
     ports:
       - "8086:8086"
+      - "8089:8089/udp" #used by traefik
     networks:
       - default
     volumes:
       # files cannot be created by docker-compose, it'll make it as a directory instead. Make sure to touch this file first.
       - ${CONTAINERPATH}/influxdb/influxdb.generated.conf:/etc/influxdb/influxdb.generated.conf
       - ${CONTAINERPATH}/influxdb/db:/var/lib/influxdb
-      - ${CONTAINERPATH}/influxdb:/var/lib/influxdb
-      - ${CONTAINERPATH}/shared:/shared
+      #- ${CONTAINERPATH}/influxdb:/var/lib/influxdb
+      #- ${CONTAINERPATH}/shared:/shared
     environment:
       #- INFLUX_GRAPHITE_ENABLED ='true'
       #- INFLUXDB_ADMIN_USER=${INFLUXDB_ADMIN_USER}
@@ -228,6 +229,9 @@ services:
       - INFLUXDB_DB=${INFLUXDB_DB}
       - INFLUXDB_USER=${INFLUXDB_USER}
       - INFLUXDB_USER_PASSWORD=${INFLUXDB_USER_PASSWORD}
+      #Added to be able to receive Traefik metric data
+      - INFLUXDB_UDP_ENABLED=true
+      - INFLUXDB_UDP_DATABASE=home_assistant
       - TZ=${TZ}
 
 
@@ -276,20 +280,20 @@ services:
       - /var/run/docker.sock:/var/run/docker.sock #used for the docker monitor integration
 
 
-  nodered1:
+  nodered:
     container_name: node-red
-    image: nodered/node-red:1.0.6
+    #image: nodered/node-red:1.2.7
+    image: nodered/node-red:1.2.9
     restart: always
     ports:
       - "1880:1880"
     environment:
-        TZ: ${TZ}
+      - TZ=${TZ}
     depends_on:
       - homeassistant
     user: root
     volumes:
-      - ${CONTAINERPATH}/node-red-1/user:/data
-      - /etc/localtime:/etc/localtime:ro
+      - ${CONTAINERPATH}/node-red/user:/data
       - /root/.ssh:/root/.ssh:ro
 
 
@@ -355,48 +359,3 @@ services:
       - traefik.http.middlewares.kanboard-https.redirectScheme.permanent=true
       - com.centurylinklabs.watchtower.enable=true
 
-
-  bitwarden:
-    image: bitwardenrs/server
-    container_name: bitwarden
-    restart: always
-    #ports:
-    #  - "2004:80"
-    networks:
-      - traefik
-    #  - default
-    volumes:
-       - ${CONTAINERPATH}/bitwardenrs:/data
-    environment:
-      WEBSOCKET_ENABLED: 'true' # Required to use websockets
-      SIGNUPS_ALLOWED: 'false'   # set to false to disable signups
-      LOG_FILE: '/data/bitwarden.log'
-    labels:
-      - traefik.enable=true
-      - traefik.docker.network=traefik
-      - traefik.http.routers.bitwarden-ui-http.entrypoints=web
-      - traefik.http.routers.bitwarden-ui-http.rule=Host(`bitwarden.${DOMAINNAME}`)
-      - traefik.http.routers.bitwarden-ui-http.middlewares=redirect-https
-      - traefik.http.routers.bitwarden-ui-http.service=bitwarden-ui
-
-      - traefik.http.routers.bitwarden-ui-https.entrypoints=websecure
-      - traefik.http.routers.bitwarden-ui-https.rule=Host(`bitwarden.${DOMAINNAME}`)
-      - traefik.http.routers.bitwarden-ui-https.tls=true
-      - traefik.http.routers.bitwarden-ui-https.service=bitwarden-ui
-      - traefik.http.routers.bitwarden-websocket-http.entrypoints=web
-      - traefik.http.routers.bitwarden-websocket-http.rule=Host(`bitwarden.${DOMAINNAME}`) && Path(`/notifications/hub`)
-
-      - traefik.http.routers.bitwarden-websocket-http.middlewares=redirect-https
-      - traefik.http.routers.bitwarden-websocket-http.service=bitwarden-websocket
-
-      - traefik.http.routers.bitwarden-websocket-https.entrypoints=websecure
-      - traefik.http.routers.bitwarden-websocket-https.rule=Host(`bitwarden.${DOMAINNAME}`) && Path(`/notifications/hub`)
-      - traefik.http.routers.bitwarden-websocket-https.tls=true
-      - traefik.http.routers.bitwarden-websocket-https.service=bitwarden-websocket
-
-      - traefik.http.middlewares.redirect-https.redirectScheme.scheme=https
-      - traefik.http.middlewares.redirect-https.redirectScheme.permanent=true
-      - traefik.http.services.bitwarden-ui.loadbalancer.server.port=80
-      - traefik.http.services.bitwarden-websocket.loadbalancer.server.port=3012
-
-  
